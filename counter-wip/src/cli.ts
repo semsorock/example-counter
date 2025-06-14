@@ -31,13 +31,6 @@ let logger: Logger;
  */
 const GENESIS_MINT_WALLET_SEED = '0000000000000000000000000000000000000000000000000000000000000001';
 
-const MAIN_LOOP_QUESTION = `
-You can do one of the following:
-  1. Increment
-  2. Display current counter value
-  3. Exit
-Which would you like to do? `;
-
 const join = async (providers: CounterProviders, rli: Interface): Promise<DeployedCounterContract> => {
   const contractAddress = '020027a98c5c648ee9260c9d476b275f2c806a3a29f5e3b1d213c32d09e038d5c239';
   return await api.joinContract(providers, contractAddress);
@@ -52,22 +45,11 @@ const mainLoop = async (providers: CounterProviders, rli: Interface): Promise<vo
   if (counterContract === null) {
     return;
   }
-  while (true) {
-    const choice = await rli.question(MAIN_LOOP_QUESTION);
-    switch (choice) {
-      case '1':
-        await api.increment(counterContract);
-        break;
-      case '2':
-        await api.displayCounterValue(providers, counterContract);
-        break;
-      case '3':
-        logger.info('Exiting...');
-        return;
-      default:
-        logger.error(`Invalid choice: ${choice}`);
-    }
-  }
+
+  // Execute actions in sequence
+  await api.increment(counterContract);
+  await api.displayCounterValue(providers, counterContract);
+  logger.info('Exiting...');
 };
 
 const buildWallet = async (config: Config, rli: Interface): Promise<(Wallet & Resource) | null> => {
