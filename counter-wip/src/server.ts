@@ -26,7 +26,7 @@ import axios from 'axios';
 
 const logger = await createLogger('logs/server.log');
 const app = express();
-const port = 3333;
+const port = 3011;
 
 // Add JSON body parser middleware
 app.use(express.json());
@@ -223,6 +223,9 @@ const runServer = async () => {
       }
     });
 
+    const inputHash = uuidv4(); // Simulated input hash
+    const blockchainIdentifier = 'Cardano';
+
     app.post('/start_job', async (req: Request, res: Response) => {
       const inputData = req.body.input_data;
       if (!Array.isArray(inputData)) {
@@ -236,9 +239,23 @@ const runServer = async () => {
 
       const jobId = uuidv4();
       const paymentId = uuidv4();
+      const now = Math.floor(Date.now() / 1000); // Current time in Unix seconds
+    
+      const unlockTime = now + 600; // 10 minutes later
+      const externalDisputeUnlockTime = now + 1800; // 30 minutes later
+      const submitResultTime = now + 1200; // 20 minutes later
+
       jobs.set(jobId, { status: 'awaiting_payment', result: null });
 
-      res.json({ job_id: jobId, payment_id: paymentId });
+      res.json({
+        job_id: jobId,
+        payment_id: paymentId,
+        inputHash,
+        blockchainIdentifier,
+        unlockTime: unlockTime.toString(),
+        externalDisputeUnlockTime: externalDisputeUnlockTime.toString(),
+        submitResultTime: submitResultTime.toString()
+      });
 
       try {
         let confirmed = false;
