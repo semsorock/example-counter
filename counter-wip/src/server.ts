@@ -21,10 +21,23 @@ import { type Wallet } from '@midnight-ntwrk/wallet-api';
 import { type Logger } from 'pino';
 import { type CounterProviders, type DeployedCounterContract } from './common-types.js';
 import express, { type Request, type Response } from 'express';
+import { v4 as uuidv4 } from 'uuid';
+import axios from 'axios';
 
 const logger = await createLogger('logs/server.log');
 const app = express();
 const port = 3333;
+
+// Add JSON body parser middleware
+app.use(express.json());
+
+
+const MASUMI_PAYMENT_SERVICE_URL='https://localhost:3001/api/v1'
+const MASUMI_PAYMENT_API_KEY='masumi-payment-admin-zjcibanusu84ocewzqlk3u41'
+
+
+const NETWORK = 'Preprod';
+const jobs = new Map();
 
 const ASCII_NUMBERS: Record<string, string[]> = {
   '0': [
@@ -176,16 +189,130 @@ const runServer = async () => {
       await logLedgerState(providers, counterContract);
     }, 5000);
 
-    // Set up HTTP endpoint
-    app.get('/inc', async (req: Request, res: Response) => {
+    // Set up HTTP endpoints
+    app.post('/start_job_old', async (req: Request, res: Response) => {
       try {
+        const { input_data } = req.body;
+        
+        if (!input_data || !Array.isArray(input_data)) {
+          return res.status(400).json({ 
+            success: false, 
+            error: 'Invalid request body: input_data must be an array' 
+          });
+        }
+
+        const taskInput = input_data.find(item => item.key === 'task');
+        if (!taskInput || taskInput.value !== 'increment') {
+          return res.status(400).json({ 
+            success: false, 
+            error: 'Invalid task value: must be "increment"' 
+          });
+        }
+
         const result = await api.increment(counterContract);
         logger.info(`Incremented counter via HTTP. Transaction ID: ${result.txId}`);
-        res.json({ success: true, txId: result.txId });
+        res.json({ job_id: result.txId});
       } catch (error) {
-        logger.error('Error incrementing counter:', error);
-        res.status(500).json({ success: false, error: 'Failed to increment counter' });
+        const errorMessage = error instanceof Error ? error.message : 'Unknown error occurred';
+        logger.error('Error incrementing counter:', { error: errorMessage, stack: error instanceof Error ? error.stack : undefined });
+        res.status(500).json({ 
+          success: false, 
+          error: 'Failed to increment counter',
+          details: errorMessage
+        });
       }
+    });
+
+    app.post('/start_job', async (req: Request, res: Response) => {
+      const inputData = req.body.input_data;
+      if (!Array.isArray(inputData)) {
+        return res.status(400).json({ error: 'input_data must be an array' });
+      }
+
+      const task = inputData.find((entry) => entry.key === 'task')?.value;
+      if (task !== 'increment') {
+        return res.status(400).json({ error: 'Unsupported task' });
+      }
+
+      const jobId = uuidv4();
+      const paymentId = uuidv4();
+      jobs.set(jobId, { status: 'awaiting_payment', result: null });
+
+      res.json({ job_id: jobId, payment_id: paymentId });
+
+      try {
+        let confirmed = false;
+        const start = Date.now();
+        const timeout = 120000;
+        while (!confirmed && Date.now() - start < timeout) {
+          logger.info('in while loop');
+          await new Promise((r) => setTimeout(r, 5000));
+          const check = await axios.get(`${MASUMI_PAYMENT_SERVICE_URL}/payment`, {
+            params: { paymentId },
+            headers: { token: MASUMI_PAYMENT_API_KEY },
+          });
+          
+          logger.info('after payment check');
+          logger.info(`check: ${check}`);
+
+          if (check.data?.data?.status === 'Success') {
+            confirmed = true;
+          }
+        }
+
+        if (!confirmed) {
+          jobs.set(jobId, { status: 'failed', result: 'Payment timeout' });
+          logger.info('payment timeout. quiting');
+          return;
+        }
+
+        jobs.set(jobId, { status: 'running' });
+
+        logger.info('before increment');
+        const result = await api.increment(counterContract);
+        logger.info(`after increment: ${result}`);
+
+        jobs.set(jobId, { status: 'completed', result: result.txId });
+      } catch (err) {
+        logger.error(`error: ${err}`);
+        jobs.set(jobId, { status: 'failed', result: err instanceof Error ? err.message : 'Unknown error' });
+      }
+    });
+
+    app.get('/status', (req: Request, res: Response) => {
+      const jobId = req.query.job_id as string;
+      if (!jobId || !jobs.has(jobId)) {
+        return res.status(404).json({ error: 'Job not found' });
+      }
+
+      const job = jobs.get(jobId);
+      res.json({
+        job_id: jobId,
+        status: job.status,
+        result: job.result,
+      });
+    });
+
+    app.get('/availability', (req: Request, res: Response) => {
+      res.json({
+        status: 'available',
+        uptime: Math.floor(process.uptime()),
+        message: 'Midnight Counter Agent is running',
+      });
+    });
+
+    app.get('/input_schema', (req: Request, res: Response) => {
+      res.json({
+        input_data: [
+          {
+            key: 'task',
+            value: {
+              type: 'string',
+              enum: ['increment'],
+            },
+          },
+        ],
+      });
     });
 
     // Start HTTP server
